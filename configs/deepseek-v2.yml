@@ -1,0 +1,43 @@
+# DeepSeek-V2 Configuration
+model_path: deepseek-ai/DeepSeek-V2
+device: cuda:0
+device_map: auto
+dtype: bfloat16
+load_in_4bit: false
+compile_model: true
+use_flash_attention: true
+
+# Generation defaults
+max_new_tokens: 2048
+temperature: 0.7
+top_p: 0.9
+top_k: 50
+repetition_penalty: 1.0
+
+# Architecture
+hidden_size: 5120
+num_layers: 60
+num_attention_heads: 128
+num_kv_heads: 128
+intermediate_size: 12288
+num_experts: 160
+num_shared_experts: 2
+top_k_experts: 6
+moe_intermediate_size: 1536
+vocab_size: 102400
+max_position_embeddings: 163840
+rope_theta: 10000.0
+
+# MLA specific
+kv_lora_rank: 512
+q_lora_rank: 1536
+rope_dim: 64
+
+# Training (LoRA)
+lora_rank: 32
+lora_alpha: 64
+lora_dropout: 0.05
+use_qlora: true
+qlora_bits: 4
+learning_rate: 2e-4
+epochs: 3

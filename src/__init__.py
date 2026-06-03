@@ -1,2 +1,3 @@
-"""deepseek-rocm: DeepSeek inference and fine-tuning on AMD ROCm."""
-__version__ = "0.1.0"
+"""DeepSeek ROCm — High-performance inference and fine-tuning on AMD GPUs."""
+
+__version__ = "1.0.0"

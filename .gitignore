@@ -1,26 +1,16 @@
-# Python
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-venv/
-.venv/
 *.egg-info/
 dist/
 build/
+*.egg
 .eggs/
 
-# Models
-*.bin
-*.safetensors
-*.gguf
-models/
-checkpoints/
-
-# ROCm
-.rocminfo/
-*.hsaco
+# Virtual envs
+venv/
+.venv/
+env/
 
 # IDE
 .vscode/
@@ -28,15 +18,30 @@ checkpoints/
 *.swp
 *.swo
 
+# Model files
+*.bin
+*.safetensors
+*.pt
+*.pth
+output/
+checkpoints/
+
+# Data
+data/
+*.jsonl
+
+# Logs
+wandb/
+runs/
+*.log
+
+# Benchmark results
+benchmark_results.json
+training_benchmark.json
+
+# Docker
+.docker/
+
 # OS
 .DS_Store
 Thumbs.db
-
-# Logs
-*.log
-logs/
-wandb/
-
-# Env
-.env
-*.env.local

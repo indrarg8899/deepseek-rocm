@@ -1,136 +1,151 @@
-"""
-Quantization engine for DeepSeek models.
+"""Post-training quantization: GPTQ and AWQ for DeepSeek models."""
 
-Supports GPTQ, AWQ, and dynamic quantization for efficient
-inference on AMD MI300X GPUs.
-"""
+from __future__ import annotations
 
-import json
+import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
-import numpy as np
-from transformers import AutoModelForCausalLM, AutoTokenizer, GPTQConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class QuantizeConfig:
-    """Quantization configuration."""
-    model_path: str = "deepseek-ai/deepseek-llm-7b-chat"
-    bits: int = 4  # 2, 3, 4, 8
-    method: str = "gptq"  # gptq, dynamic
+    model_path: str
+    output_path: str
+    method: Literal["gptq", "awq"] = "gptq"
+    bits: int = 4
     group_size: int = 128
-    dataset_size: int = 128
-    sym: bool = True
-    desc_act: bool = True
-    device: str = "cuda:0"
+    dataset: str = "pileval"
+    num_samples: int = 128
+    seq_len: int = 2048
+    sym: bool = False
 
 
-class Quantizer:
-    """Model quantization for AMD MI300X."""
+def quantize_gptq(config: QuantizeConfig):
+    """Quantize model using GPTQ."""
+    from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
+    from transformers import AutoTokenizer
 
-    def __init__(self, config: Optional[QuantizeConfig] = None, **kwargs):
-        if config is None:
-            config = QuantizeConfig(**kwargs)
-        self.config = config
-        self.model = None
-        self.tokenizer = None
+    logger.info("GPTQ quantization: %s → %d-bit", config.model_path, config.bits)
 
-    def load_model(self):
-        """Load the model for quantization."""
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.config.model_path, trust_remote_code=True
-        )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.config.model_path,
-            torch_dtype=torch.float16,
-            device_map="cpu",
-            trust_remote_code=True,
-        )
+    quantize_config = BaseQuantizeConfig(
+        bits=config.bits,
+        group_size=config.group_size,
+        desc_act=True,
+        sym=config.sym,
+        damp_percent=0.01,
+    )
 
-    def gptq(self, bits: int = None, dataset_size: int = None):
-        """Apply GPTQ quantization."""
-        bits = bits or self.config.bits
-        dataset_size = dataset_size or self.config.dataset_size
+    tokenizer = AutoTokenizer.from_pretrained(config.model_path, trust_remote_code=True)
+    model = AutoGPTQForCausalLM.from_pretrained(
+        config.model_path, quantize_config, trust_remote_code=True
+    )
 
-        print(f"Applying GPTQ quantization ({bits}-bit)...")
+    # Load calibration data
+    calibration = _load_calibration(config.dataset, config.num_samples, config.seq_len)
 
-        quant_config = GPTQConfig(
-            bits=bits,
-            group_size=self.config.group_size,
-            dataset_size=dataset_size,
-            sym=self.config.sym,
-            desc_act=self.config.desc_act,
-            tokenizer=self.tokenizer,
-        )
+    t0 = time.perf_counter()
+    model.quantize(calibration, tokenizer=tokenizer)
+    elapsed = time.perf_counter() - t0
+    logger.info("Quantization done in %.1fs", elapsed)
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.config.model_path,
-            quantization_config=quant_config,
-            device_map=self.config.device,
-            trust_remote_code=True,
-        )
+    model.save_quantized(config.output_path)
+    tokenizer.save_pretrained(config.output_path)
+    logger.info("Saved to %s", config.output_path)
 
-        print(f"GPTQ quantization complete. Model on {self.config.device}")
 
-    def dynamic_quantize(self, bits: int = 8):
-        """Apply dynamic quantization (PyTorch native)."""
-        bits = bits or self.config.bits
+def quantize_awq(config: QuantizeConfig):
+    """Quantize model using AWQ."""
+    from awq import AutoAWQForCausalLM
+    from transformers import AutoTokenizer
 
-        print(f"Applying dynamic quantization ({bits}-bit)...")
+    logger.info("AWQ quantization: %s → %d-bit", config.model_path, config.bits)
 
-        if self.model is None:
-            self.load_model()
+    tokenizer = AutoTokenizer.from_pretrained(config.model_path, trust_remote_code=True)
+    model = AutoAWQForCausalLM.from_pretrained(
+        config.model_path, trust_remote_code=True
+    )
 
-        if bits == 8:
-            self.model = torch.quantization.quantize_dynamic(
-                self.model, {torch.nn.Linear}, dtype=torch.qint8
-            )
-        elif bits == 4:
-            self.model = torch.quantization.quantize_dynamic(
-                self.model, {torch.nn.Linear}, dtype=torch.qint4
-            )
+    quant_config = {
+        "zero_point": True,
+        "q_group_size": config.group_size,
+        "w_bit": config.bits,
+        "version": "GEMM",
+    }
 
-        print("Dynamic quantization complete")
+    calibration = _load_calibration(config.dataset, config.num_samples, config.seq_len)
 
-    def save(self, output_path: str):
-        """Save quantized model."""
-        path = Path(output_path)
-        path.mkdir(parents=True, exist_ok=True)
+    t0 = time.perf_counter()
+    model.quantize(tokenizer, quant_config=quant_config, calib_data=calibration)
+    elapsed = time.perf_counter() - t0
+    logger.info("Quantization done in %.1fs", elapsed)
 
-        if self.model is not None:
-            self.model.save_pretrained(str(path / "model"))
-        if self.tokenizer is not None:
-            self.tokenizer.save_pretrained(str(path / "tokenizer"))
+    model.save_quantized(config.output_path)
+    tokenizer.save_pretrained(config.output_path)
+    logger.info("Saved to %s", config.output_path)
 
-        # Save quantization metadata
-        meta = {
-            "bits": self.config.bits,
-            "method": self.config.method,
-            "group_size": self.config.group_size,
-            "source_model": self.config.model_path,
-            "format": "gptq" if self.config.method == "gptq" else "dynamic",
-        }
-        (path / "quantization_info.json").write_text(json.dumps(meta, indent=2))
-        print(f"Quantized model saved to {path}")
 
-    def get_model_size(self, path: str = None) -> dict:
-        """Estimate model size."""
-        if path:
-            total = sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
-        elif self.model is not None:
-            param_size = sum(p.numel() * p.element_size() for p in self.model.parameters())
-            buffer_size = sum(b.numel() * b.element_size() for b in self.model.buffers())
-            total = param_size + buffer_size
-        else:
-            total = 0
+def _load_calibration(dataset: str, num_samples: int, seq_len: int) -> list[str]:
+    """Load calibration dataset for quantization."""
+    from datasets import load_dataset
 
-        return {
-            "size_bytes": total,
-            "size_mb": total / 1e6,
-            "size_gb": total / 1e9,
-            "bits": self.config.bits,
-            "compression_ratio": 16 / self.config.bits if self.config.bits > 0 else 1,
-        }
+    logger.info("Loading calibration data: %s (%d samples)", dataset, num_samples)
+
+    if dataset == "pileval":
+        ds = load_dataset("mit-han-lab/pile-val-backup", split="validation")
+        text_col = "text"
+    elif dataset == "c4":
+        ds = load_dataset("allenai/c4", "en", split="validation", streaming=True)
+        text_col = "text"
+    else:
+        ds = load_dataset(dataset, split="train")
+        text_col = "text"
+
+    samples = []
+    for i, row in enumerate(ds):
+        if i >= num_samples:
+            break
+        text = row[text_col][:seq_len * 4]  # rough char limit
+        samples.append(text)
+
+    return samples
+
+
+def quantize(config: QuantizeConfig):
+    """Dispatch to GPTQ or AWQ quantizer."""
+    if config.method == "gptq":
+        quantize_gptq(config)
+    elif config.method == "awq":
+        quantize_awq(config)
+    else:
+        raise ValueError(f"Unknown method: {config.method}")
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Quantize DeepSeek models")
+    parser.add_argument("--model", required=True, help="Model path")
+    parser.add_argument("--output", required=True, help="Output path")
+    parser.add_argument("--method", choices=["gptq", "awq"], default="gptq")
+    parser.add_argument("--bits", type=int, default=4)
+    parser.add_argument("--group-size", type=int, default=128)
+    parser.add_argument("--dataset", default="pileval")
+    parser.add_argument("--num-samples", type=int, default=128)
+    args = parser.parse_args()
+
+    cfg = QuantizeConfig(
+        model_path=args.model,
+        output_path=args.output,
+        method=args.method,
+        bits=args.bits,
+        group_size=args.group_size,
+        dataset=args.dataset,
+        num_samples=args.num_samples,
+    )
+    quantize(cfg)
