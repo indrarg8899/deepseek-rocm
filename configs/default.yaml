@@ -1,0 +1,49 @@
+# DeepSeek ROCm Configuration
+# Fine-tuning and inference defaults
+
+inference:
+  model: "deepseek-ai/deepseek-llm-7b-chat"
+  dtype: "float16"
+  device: "cuda:0"
+  flash_attention: true
+  max_seq_len: 4096
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 50
+
+finetune:
+  model: "deepseek-ai/deepseek-llm-7b-chat"
+  method: "lora"
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  epochs: 3
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 2e-4
+  max_seq_len: 2048
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  gradient_checkpointing: true
+
+quantize:
+  model: "deepseek-ai/deepseek-llm-7b-chat"
+  bits: 4
+  method: "gptq"
+  group_size: 128
+  dataset_size: 128
+
+rocm:
+  memory_fraction: 0.95
+  flash_attention: true
+  kernel_fusion: true
+  miopen_find_mode: 3
+  gpu_max_hw_queues: 4
